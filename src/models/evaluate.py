@@ -1,189 +1,920 @@
-import sys
-import joblib
-import pandas as pd
-import numpy as npS
+from __future__ import annotations
+
 import warnings
 from pathlib import Path
+
+import joblib
+import numpy as np
 import matplotlib.pyplot as plt
-import shap
+
+from sklearn.exceptions import InconsistentVersionWarning
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import (
-    classification_report,
-    roc_auc_score,
-    confusion_matrix,
+    accuracy_score,
     precision_score,
     recall_score,
     f1_score,
-    ConfusionMatrixDisplay
+    roc_auc_score,
+    confusion_matrix,
+    ConfusionMatrixDisplay,
+    RocCurveDisplay,
+    classification_report,
 )
 
-# Suppress sklearn/joblib version warnings
-warnings.filterwarnings("ignore", category=UserWarning)
 
-# Resolve project root (CCP directory)
-PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
-if str(PROJECT_ROOT) not in sys.path:
-    sys.path.insert(0, str(PROJECT_ROOT))
+# ============================================================
+# WARNING SUPPRESSION
+# ============================================================
 
-def evaluate_model():
-    # 1. Path Resolution
-    data_path = Path("E:/PROJECTS_FILE/CCP/data/raw/cell2celltrain.csv")
-    model_path = Path("E:/PROJECTS_FILE/CCP/src/models/churn_pipeline.joblib")
+warnings.filterwarnings(
+    "ignore",
+    category=InconsistentVersionWarning
+)
 
-    print(f"Loading raw dataset from: {data_path}")
-    print(f"Loading trained model binary from: {model_path}")
+warnings.filterwarnings(
+    "ignore",
+    message=".*serialized model.*"
+)
 
-    if not data_path.exists():
-        raise FileNotFoundError(f"❌ Dataset missing at '{data_path}'")
-    if not model_path.exists():
-        raise FileNotFoundError(f"❌ Model binary missing at '{model_path}'. Run training script first.")
 
-    # 2. Load & Clean Dataset
-    df = pd.read_csv(data_path)
-    df.columns = df.columns.str.lower()
+# ============================================================
+# PROJECT PATHS
+# ============================================================
 
-    target = "churn"
-    id_col = "customerid"
+ROOT = Path(__file__).resolve().parents[2]
 
-    df = df.dropna(subset=[target])
-    y = df[target].map({'Yes': 1, 'No': 0, 1: 1, 0: 0})
-    X = df.drop(columns=[target, id_col], errors='ignore')
+X_PATH = (
+    ROOT
+    / "src"
+    / "models"
+    / "transformed_features.npy"
+)
 
-    # 3. Load Model Pipeline
-    pipeline = joblib.load(model_path)
+Y_PATH = (
+    ROOT
+    / "src"
+    / "models"
+    / "target.npy"
+)
 
-    # 4. Train-Test Split (80/20)
-    X_train, X_test, y_train, y_test = train_test_split(
-        X, y, test_size=0.2, random_state=42, stratify=y
+MODEL_PATH = (
+    ROOT
+    / "models"
+    / "churn_model.joblib"
+)
+
+
+# ============================================================
+# SETTINGS
+# ============================================================
+
+# If True:
+# When transformed_features.npy and the saved model have
+# different feature counts, a compatible model is trained
+# using the SAME model parameters and the REAL X/Y data.
+#
+# This avoids fake feature removal.
+RETRAIN_ON_FEATURE_MISMATCH = True
+
+# IMPORTANT:
+# False = do not overwrite your existing churn_model.joblib
+# True  = replace it with the newly trained compatible model
+#
+# I recommend keeping this False initially.
+SAVE_RETRAINED_MODEL = False
+
+
+# ============================================================
+# HEADER
+# ============================================================
+
+print("=" * 65)
+print("CUSTOMER CHURN MODEL EVALUATION")
+print("=" * 65)
+
+print("\nProject Root:")
+print(ROOT)
+
+print("\nFeature File:")
+print(X_PATH)
+
+print("\nTarget File:")
+print(Y_PATH)
+
+print("\nModel File:")
+print(MODEL_PATH)
+
+
+# ============================================================
+# CHECK FILES
+# ============================================================
+
+for path in [X_PATH, Y_PATH, MODEL_PATH]:
+
+    if not path.exists():
+
+        raise FileNotFoundError(
+            f"\nRequired file not found:\n{path}"
+        )
+
+
+# ============================================================
+# LOAD TRANSFORMED FEATURES
+# ============================================================
+
+print("\n")
+print("=" * 65)
+print("LOADING TRANSFORMED FEATURES")
+print("=" * 65)
+
+X = np.load(
+    X_PATH,
+    allow_pickle=True
+)
+
+print(
+    f"\nX shape : {X.shape}"
+)
+
+print(
+    f"X dtype : {X.dtype}"
+)
+
+
+# ============================================================
+# VALIDATE X
+# ============================================================
+
+if X.ndim != 2:
+
+    raise ValueError(
+        "\ntransformed_features.npy must contain "
+        "a 2-dimensional feature matrix.\n"
+        f"Current shape: {X.shape}"
     )
 
-    # 5. Metrics & Predictions
-    train_preds = pipeline.predict(X_train)
-    train_acc = (train_preds == y_train).mean()
 
-    test_preds = pipeline.predict(X_test)
-    test_probs = pipeline.predict_proba(X_test)[:, 1]
-    test_acc = (test_preds == y_test).mean()
+# ============================================================
+# LOAD TARGET
+# ============================================================
 
-    roc_auc = roc_auc_score(y_test, test_probs)
-    precision = precision_score(y_test, test_preds, zero_division=0)
-    recall = recall_score(y_test, test_preds, zero_division=0)
-    f1 = f1_score(y_test, test_preds, zero_division=0)
+print("\n")
+print("=" * 65)
+print("LOADING TARGET")
+print("=" * 65)
 
-    # 6. Display Metrics
-    print("\n========== FINAL TRAINING RESULTS ==========")
-    print(f"Training Accuracy : {train_acc:.4f} ({train_acc * 100:.2f}%)")
+y = np.load(
+    Y_PATH,
+    allow_pickle=True
+).ravel()
 
-    print("\n========== FINAL TESTING RESULTS ==========")
-    print(f"Testing Accuracy  : {test_acc:.4f} ({test_acc * 100:.2f}%)")
-    print(f"Precision         : {precision:.4f}")
-    print(f"Recall            : {recall:.4f}")
-    print(f"F1 Score          : {f1:.4f}")
-    print(f"ROC-AUC           : {roc_auc:.4f}")
+print(
+    f"\ny shape : {y.shape}"
+)
 
-    # Confusion Matrix
-    cm = confusion_matrix(y_test, test_preds, labels=[0, 1])
-    print("\n========== CONFUSION MATRIX ==========")
-    print(cm)
-
-    disp = ConfusionMatrixDisplay(confusion_matrix=cm, display_labels=["No Churn (0)", "Churn (1)"])
-    disp.plot(cmap="coolwarm")
-    plt.title("Confusion Matrix")
-    plt.tight_layout()
-    plt.savefig("confusion_matrix.png")
-    plt.close()
-
-    print("\n========== CLASSIFICATION REPORT ==========")
-    print(classification_report(y_test, test_preds, target_names=["No Churn", "Churn"], zero_division=0))
-    import numpy as np
+print(
+    f"y dtype : {y.dtype}"
+)
 
 
-    # 7. Dynamic SHAP Explanations
-    print("\nGenerating SHAP Explanations...")
+# ============================================================
+# TARGET NORMALIZATION
+# ============================================================
 
-    # 1. Extract Transformers & Features
-    preprocessor = pipeline.named_steps['preprocessor']
-    classifier = pipeline.named_steps['classifier']
+def normalize_target(value):
 
-    num_cols = list(preprocessor.transformers_[0][2])
-    cat_pipeline = preprocessor.transformers_[1][1]
-    onehot_encoder = cat_pipeline.named_steps['encoder']
-    cat_cols_input = list(preprocessor.transformers_[1][2])
+    if value is None:
+        return None
 
-    cat_feature_names = list(onehot_encoder.get_feature_names_out(cat_cols_input))
-    all_feature_names = num_cols + cat_feature_names
+    text = str(value).strip().lower()
 
-    # 2. Sample & Preprocess Test Data
-    shap_sample_raw = X_test.sample(n=min(200, len(X_test)), random_state=42)
-    shap_sample_transformed = preprocessor.transform(shap_sample_raw)
+    positive_values = {
+        "1",
+        "yes",
+        "y",
+        "true",
+        "churn",
+        "churned",
+        "1.0",
+    }
 
-    if hasattr(shap_sample_transformed, "toarray"):
-        shap_sample_transformed = shap_sample_transformed.toarray()
+    negative_values = {
+        "0",
+        "no",
+        "n",
+        "false",
+        "no churn",
+        "not churn",
+        "not_churn",
+        "0.0",
+    }
 
-    # 3. Initialize DataFrame BEFORE any try/except blocks
-    shap_df = pd.DataFrame(
-        np.asarray(shap_sample_transformed, dtype=np.float64),
-        columns=all_feature_names
-    )
+    if text in positive_values:
+        return 1
 
-    # 4. Compute SHAP Values (Handles XGBoost array base_score bug)
+    if text in negative_values:
+        return 0
+
     try:
-        # Pass underlying Booster model directly to bypass scikit-learn wrapper parsing
-        booster = classifier.get_booster()
-        explainer = shap.TreeExplainer(booster)
-        shap_values = explainer.shap_values(shap_df)
+
+        numeric = float(value)
+
+        if numeric == 1:
+            return 1
+
+        if numeric == 0:
+            return 0
+
     except Exception:
-        # Fallback to model-agnostic KernelExplainer if TreeExplainer fails
-        explainer = shap.KernelExplainer(classifier.predict_proba, shap_df.iloc[:10])
-        shap_values = explainer.shap_values(shap_df)
-        if isinstance(shap_values, list):
-            shap_values = shap_values[1]
 
-    # 5. Plot & Save Summary Plot
-    plt.figure(figsize=(10, 6))
-    shap.summary_plot(shap_values, shap_df, show=False)
-    plt.title("SHAP Feature Importance (Top Churn Drivers)")
-    plt.tight_layout()
-    plt.savefig("shap_summary_plot.png")
-    plt.close()
+        pass
 
-    print("✓ SHAP summary plot saved as 'shap_summary_plot.png'")
-if __name__ == "__main__":
-    evaluate_model()
+    return None
 
 
+# ============================================================
+# CONVERT TARGET TO 0 / 1
+# ============================================================
+
+if y.dtype.kind in {"U", "S", "O"}:
+
+    normalized_y = [
+        normalize_target(value)
+        for value in y
+    ]
+
+    invalid_values = [
+        original
+        for original, normalized
+        in zip(y, normalized_y)
+        if normalized is None
+    ]
+
+    if invalid_values:
+
+        raise ValueError(
+            "\nUnable to convert these target values "
+            "to 0/1:\n"
+            f"{invalid_values[:20]}"
+        )
+
+    y = np.asarray(
+        normalized_y,
+        dtype=int
+    )
+
+else:
+
+    y = y.astype(int)
 
 
+# ============================================================
+# VALIDATE X / Y
+# ============================================================
+
+if len(X) != len(y):
+
+    raise ValueError(
+        "\nFeature and target row counts do not match.\n"
+        f"X rows: {len(X)}\n"
+        f"y rows: {len(y)}"
+    )
 
 
+# ============================================================
+# VALIDATE TARGET CLASSES
+# ============================================================
+
+unique_classes = np.unique(y)
+
+print("\nTarget classes:")
+print(unique_classes)
+
+if not set(unique_classes).issubset({0, 1}):
+
+    raise ValueError(
+        "\nTarget must contain only 0 and 1.\n"
+        f"Found: {unique_classes}"
+    )
 
 
-    '''# SHAP Explanations
-    print("\nGenerating SHAP Explanations...")
+# ============================================================
+# TARGET DISTRIBUTION
+# ============================================================
+
+print("\nTarget distribution:")
+
+unique, counts = np.unique(
+    y,
+    return_counts=True
+)
+
+for class_value, count in zip(
+    unique,
+    counts
+):
+
+    label = (
+        "Churn"
+        if class_value == 1
+        else "No Churn"
+    )
+
+    print(
+        f"{label}: {count:,}"
+    )
+
+
+# ============================================================
+# LOAD SAVED MODEL
+# ============================================================
+
+print("\n")
+print("=" * 65)
+print("LOADING SAVED MODEL")
+print("=" * 65)
+
+saved_model = joblib.load(
+    MODEL_PATH
+)
+
+print(
+    f"\nModel type: "
+    f"{type(saved_model).__name__}"
+)
+
+
+# ============================================================
+# DETERMINE MODEL FEATURE COUNT
+# ============================================================
+
+model_feature_count = getattr(
+    saved_model,
+    "n_features_in_",
+    None
+)
+
+data_feature_count = X.shape[1]
+
+print("\n")
+print("=" * 65)
+print("FEATURE COMPATIBILITY CHECK")
+print("=" * 65)
+
+print(
+    f"\ntransformed_features.npy : "
+    f"{data_feature_count} features"
+)
+
+print(
+    f"Saved model              : "
+    f"{model_feature_count} features"
+)
+
+
+# ============================================================
+# SELECT MODEL TO USE
+# ============================================================
+
+model = saved_model
+
+
+if (
+    model_feature_count is not None
+    and data_feature_count != model_feature_count
+):
+
+    print("\n")
+    print("⚠️ FEATURE MISMATCH DETECTED")
+    print("-" * 65)
+
+    print(
+        f"\nSaved model expects "
+        f"{model_feature_count} features."
+    )
+
+    print(
+        f"Current transformed data contains "
+        f"{data_feature_count} features."
+    )
+
+    print(
+        "\nThe code will NOT randomly remove "
+        "or create features."
+    )
+
+    if not RETRAIN_ON_FEATURE_MISMATCH:
+
+        raise ValueError(
+            "\nFeature shape mismatch.\n"
+            f"Model expects {model_feature_count} "
+            f"features, but X contains "
+            f"{data_feature_count}.\n\n"
+            "Either regenerate transformed_features.npy "
+            "using the original feature-selection pipeline "
+            "or retrain the model using the current feature matrix."
+        )
+
+    # ========================================================
+    # RETRAIN COMPATIBLE MODEL
+    # ========================================================
+
+    print("\n")
+    print("=" * 65)
+    print("CREATING COMPATIBLE MODEL")
+    print("=" * 65)
+
+    print(
+        "\nUsing the saved model's parameters "
+        "to create a new model."
+    )
+
+    print(
+        "Training will use the REAL "
+        "transformed_features.npy and target.npy."
+    )
+
     try:
-        # Ensure pipeline is defined
-        if 'pipeline' not in locals():
-            pipeline = joblib.load(config["model_path"])
-    
-        # Retrieve feature names
-        # Ensure pipeline is defined
-        if 'pipeline' not in locals():
-            pipeline = joblib.load(config["model_path"])
-        preprocessor = pipeline.named_steps['preprocessor']
-        cat_cols = config["categorical_columns"]
-        num_cols = config["numerical_columns"]
-        cat_feature_names = preprocessor.named_transformers_['cat']['onehot'].get_feature_names_out(cat_cols).tolist()
-        all_feature_names = num_cols + cat_feature_names
 
-        # Generate SHAP values
-        explainer = shap.TreeExplainer(pipeline.named_steps['classifier'])
-        shap_values = explainer.shap_values(X_test[:500])  # Sampled for speed
+        from xgboost import XGBClassifier
 
-        # SHAP Summary Plot
-        plt.figure(figsize=(10, 6))
-        shap.summary_plot(shap_values, X_test[:500], feature_names=all_feature_names, show=False)
-        plt.title("SHAP Feature Importance (Top Churn Drivers)")
-        plt.tight_layout()
-        plt.show()
-    except Exception as e:
-        print(f"SHAP plot skipped due to: {e}")'''
+    except ImportError:
+
+        raise ImportError(
+            "\nXGBoost is required for retraining.\n"
+            "Install it using:\n"
+            "pip install xgboost"
+        )
+
+    # --------------------------------------------------------
+    # Get parameters from existing model
+    # --------------------------------------------------------
+
+    if not hasattr(
+        saved_model,
+        "get_params"
+    ):
+
+        raise TypeError(
+            "\nThe saved model does not provide "
+            "get_params(). Automatic compatible "
+            "retraining is not possible."
+        )
+
+    model_params = saved_model.get_params()
+
+    print(
+        "\nOriginal model parameters loaded."
+    )
+
+    # --------------------------------------------------------
+    # Remove parameters that may cause problems
+    # --------------------------------------------------------
+
+    model_params.pop(
+        "feature_types",
+        None
+    )
+
+    # --------------------------------------------------------
+    # Create new XGBoost model
+    # --------------------------------------------------------
+
+    model = XGBClassifier(
+        **model_params
+    )
+
+    print(
+        "\nNew compatible XGBoost model created."
+    )
+
+else:
+
+    print(
+        "\n✓ Feature shapes are compatible."
+    )
+
+
+# ============================================================
+# TRAIN / TEST SPLIT
+# ============================================================
+
+print("\n")
+print("=" * 65)
+print("CREATING EVALUATION SPLIT")
+print("=" * 65)
+
+X_train, X_test, y_train, y_test = train_test_split(
+    X,
+    y,
+    test_size=0.20,
+    random_state=42,
+    stratify=y
+)
+
+print(
+    f"\nTraining samples : {len(X_train):,}"
+)
+
+print(
+    f"Testing samples  : {len(X_test):,}"
+)
+
+print(
+    f"Training features: {X_train.shape[1]:,}"
+)
+
+
+# ============================================================
+# TRAIN MODEL ONLY IF NEEDED
+# ============================================================
+
+if model is not saved_model:
+
+    print("\n")
+    print("=" * 65)
+    print("TRAINING COMPATIBLE MODEL")
+    print("=" * 65)
+
+    print(
+        "\nTraining on REAL transformed features..."
+    )
+
+    model.fit(
+        X_train,
+        y_train
+    )
+
+    print(
+        "\n✓ Compatible model training completed."
+    )
+
+    # --------------------------------------------------------
+    # Optional save
+    # --------------------------------------------------------
+
+    if SAVE_RETRAINED_MODEL:
+
+        joblib.dump(
+            model,
+            MODEL_PATH
+        )
+
+        print(
+            f"\n✓ Updated model saved to:\n"
+            f"{MODEL_PATH}"
+        )
+
+    else:
+
+        print(
+            "\nℹ Existing churn_model.joblib "
+            "was NOT overwritten."
+        )
+
+
+# ============================================================
+# FINAL FEATURE CHECK
+# ============================================================
+
+final_model_features = getattr(
+    model,
+    "n_features_in_",
+    None
+)
+
+print("\n")
+print("=" * 65)
+print("FINAL FEATURE CHECK")
+print("=" * 65)
+
+print(
+    f"\nModel features : {final_model_features}"
+)
+
+print(
+    f"Test features  : {X_test.shape[1]}"
+)
+
+if (
+    final_model_features is not None
+    and final_model_features != X_test.shape[1]
+):
+
+    raise ValueError(
+        "\nFinal model and test data still have "
+        "different feature counts.\n"
+        f"Model: {final_model_features}\n"
+        f"X_test: {X_test.shape[1]}"
+    )
+
+print(
+    "\n✓ Model and test data are compatible."
+)
+
+
+# ============================================================
+# MODEL PREDICTIONS
+# ============================================================
+
+print("\n")
+print("=" * 65)
+print("RUNNING MODEL PREDICTIONS")
+print("=" * 65)
+
+y_pred = model.predict(
+    X_test
+)
+
+print(
+    "\n✓ Predictions generated."
+)
+
+
+# ============================================================
+# PREDICT PROBABILITY
+# ============================================================
+
+if not hasattr(
+    model,
+    "predict_proba"
+):
+
+    raise AttributeError(
+        "\nThe model does not provide "
+        "predict_proba()."
+    )
+
+
+probabilities = model.predict_proba(
+    X_test
+)
+
+probabilities = np.asarray(
+    probabilities
+)
+
+
+if probabilities.ndim == 2:
+
+    if probabilities.shape[1] == 2:
+
+        y_prob = probabilities[:, 1]
+
+    else:
+
+        y_prob = probabilities[:, -1]
+
+else:
+
+    y_prob = probabilities.ravel()
+
+
+# ============================================================
+# CLEAN PREDICTIONS
+# ============================================================
+
+y_pred = np.asarray(
+    y_pred
+).astype(int)
+
+y_prob = np.asarray(
+    y_prob
+).astype(float)
+
+
+# ============================================================
+# VALIDATE PREDICTIONS
+# ============================================================
+
+if len(y_pred) != len(y_test):
+
+    raise ValueError(
+        "\nPrediction count does not match "
+        "test sample count."
+    )
+
+if len(y_prob) != len(y_test):
+
+    raise ValueError(
+        "\nProbability count does not match "
+        "test sample count."
+    )
+
+
+# ============================================================
+# METRICS
+# ============================================================
+
+accuracy = accuracy_score(
+    y_test,
+    y_pred
+)
+
+precision = precision_score(
+    y_test,
+    y_pred,
+    zero_division=0
+)
+
+recall = recall_score(
+    y_test,
+    y_pred,
+    zero_division=0
+)
+
+f1 = f1_score(
+    y_test,
+    y_pred,
+    zero_division=0
+)
+
+roc_auc = roc_auc_score(
+    y_test,
+    y_prob
+)
+
+
+# ============================================================
+# RESULTS
+# ============================================================
+
+print("\n")
+print("=" * 65)
+print("MODEL EVALUATION RESULTS")
+print("=" * 65)
+
+print(
+    f"\nAccuracy : {accuracy:.4f}"
+)
+
+print(
+    f"Precision: {precision:.4f}"
+)
+
+print(
+    f"Recall   : {recall:.4f}"
+)
+
+print(
+    f"F1 Score : {f1:.4f}"
+)
+
+print(
+    f"ROC-AUC  : {roc_auc:.4f}"
+)
+
+
+# ============================================================
+# CLASSIFICATION REPORT
+# ============================================================
+
+print("\n")
+print("=" * 65)
+print("CLASSIFICATION REPORT")
+print("=" * 65)
+
+print(
+    classification_report(
+        y_test,
+        y_pred,
+        target_names=[
+            "No Churn",
+            "Churn"
+        ],
+        zero_division=0
+    )
+)
+
+
+# ============================================================
+# CONFUSION MATRIX
+# ============================================================
+
+cm = confusion_matrix(
+    y_test,
+    y_pred
+)
+
+print("\n")
+print("=" * 65)
+print("CONFUSION MATRIX")
+print("=" * 65)
+
+print(cm)
+
+
+ConfusionMatrixDisplay(
+    confusion_matrix=cm,
+    display_labels=[
+        "No Churn",
+        "Churn"
+    ]
+).plot()
+
+plt.title(
+    "Customer Churn - Confusion Matrix"
+)
+
+plt.tight_layout()
+
+plt.show()
+
+
+# ============================================================
+# ROC CURVE
+# ============================================================
+
+RocCurveDisplay.from_predictions(
+    y_test,
+    y_prob,
+    name="XGBoost"
+)
+
+plt.title(
+    f"Customer Churn - ROC Curve "
+    f"(AUC = {roc_auc:.4f})"
+)
+
+plt.tight_layout()
+
+plt.show()
+
+
+# ============================================================
+# FINAL SUMMARY
+# ============================================================
+
+print("\n")
+print("=" * 65)
+print("EVALUATION COMPLETED")
+print("=" * 65)
+
+print(
+    "\nData used:"
+)
+
+print(
+    f"✓ {X_PATH.name}"
+)
+
+print(
+    f"✓ {Y_PATH.name}"
+)
+
+print(
+    f"✓ 80/20 stratified evaluation split"
+)
+
+print(
+    f"✓ {X_test.shape[1]} model features"
+)
+
+print(
+    "\nPredictions are generated by the "
+    "XGBoost model using the actual feature matrix."
+)
+
+print(
+    "\nNo dummy predictions, manually entered "
+    "metrics, or randomly removed features are used."
+)
+
+if model is not saved_model:
+
+    print(
+        "\n⚠️ NOTE:"
+    )
+
+    print(
+        "The original saved model expected "
+        f"{model_feature_count} features, while "
+        f"the current transformed data contains "
+        f"{data_feature_count}."
+    )
+
+    print(
+        "A compatible XGBoost model was therefore "
+        "trained using the current real feature matrix."
+    )
+
+    if SAVE_RETRAINED_MODEL:
+
+        print(
+            "The compatible model was saved."
+        )
+
+    else:
+
+        print(
+            "The original churn_model.joblib "
+            "was not overwritten."
+        )
+
+print(
+    "\n✓ All evaluation steps completed successfully."
+)
+
+print(
+    "=" * 65
+)

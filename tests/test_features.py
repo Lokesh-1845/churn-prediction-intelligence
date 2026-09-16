@@ -10,63 +10,66 @@ if str(PROJECT_ROOT) not in sys.path:
 import os
 import pytest
 import pandas as pd
+import numpy as np
 from src.models.predict import ChurnPredictor
+
 
 def test_model_prediction():
     # 1. Resolve absolute paths relative to project root (CCP folder)
-    project_root = Path(__file__).resolve().parent.parent
-    model_path = project_root / "models" / "models" / "models" / "churn_pipeline.joblib"
-    
-    # Directly specify the dataset path relative to the root folder
-    data_path = Path("E:/PROJECTS_FILE/CCP/data/raw/cell2celltrain.csv")
-    
+    model_path = PROJECT_ROOT / "src" / "models" / "churn_model.joblib"
+    features_path = PROJECT_ROOT / "src" / "models" / "transformed_features.npy"
+    target_path = PROJECT_ROOT / "src" / "models" / "target.npy"
+
     print("\n==========================================")
     print("        MODEL PREDICTION TEST RUNNER       ")
     print("==========================================")
     print(f"Checking model binary at: {model_path}")
-    print(f"Checking dataset at:      {data_path}")
-    
+    print(f"Checking transformed features at: {features_path}")
+    print(f"Checking target data at: {target_path}")
+
     # 2. Check if the trained model exists
     if not model_path.exists():
         pytest.fail(
             f"❌ Trained model binary not found at '{model_path}'. "
             "Please run 'python -m src.models.train' first."
         )
-        
-    # 3. Check if the real dataset exists
-    if not data_path.exists():
-        pytest.fail(f"❌ Original dataset not found at '{data_path}'. Please check file path.")
+
+    # 3. Check if the transformed features and target data exist
+    if not features_path.exists():
+        pytest.fail(f"❌ Transformed features not found at '{features_path}'. Please check file path.")
+    if not target_path.exists():
+        pytest.fail(f"❌ Target data not found at '{target_path}'. Please check file path.")
 
     # 4. Load trained model
     print("✓ Model file found. Instantiating ChurnPredictor...")
     predictor = ChurnPredictor(str(model_path))
-    
-    # 5. Read real dataset sample
-    print("✓ Reading sample from original dataset...")
-    full_df = pd.read_csv(data_path)
-    
-    # Exclude the target column if it exists in raw data
-    target_column = "churn"  # Replace with your actual target column name if present
-    if target_column in full_df.columns:
-        real_input = full_df.drop(columns=[target_column]).head(5)
-    else:
-        real_input = full_df.head(5)
-        
+
+    # 5. Load transformed features and target data
+    print("✓ Loading transformed features and target data...")
+    X = np.load(features_path, allow_pickle=False)
+    y = np.load(target_path, allow_pickle=True)
+
+    print(f"Transformed Features Shape: {X.shape}")
+    print(f"Target Data Shape: {y.shape}")
+
+    # 6. Select a sample of input data for prediction
+    print("✓ Selecting a sample of input data for prediction...")
+    real_input = pd.DataFrame(X[:5])  # Take the first 5 rows as input
     print("\n--- Real Input DataFrame Sample ---")
     print(real_input)
     print(f"Input Shape: {real_input.shape}")
     print(f"Input Columns: {list(real_input.columns)}")
-    
-    # 6. Run prediction pipeline
+
+    # 7. Run prediction pipeline
     print("\n--- Running Prediction Pipeline ---")
     out = predictor.predict(real_input)
-    
+
     print("\n--- Model Output DataFrame ---")
     print(out)
     print(f"Output Columns: {list(out.columns)}")
     print(f"Output Shape: {out.shape}")
-    
-    # 7. Print prediction results summary for the first row
+
+    # 8. Print prediction results summary for the first row
     prob = out["churn_probability"].iloc[0]
     pred = out["churn_prediction"].iloc[0]
     print("\n--- Prediction Results Summary (Row 0) ---")

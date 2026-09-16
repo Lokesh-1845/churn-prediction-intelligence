@@ -1,330 +1,325 @@
-'''import os
+from __future__ import annotations
+
 import joblib
-import pandas as pd
-from lightgbm import LGBMClassifier
-from sklearn.pipeline import Pipeline
-
-from src.utils.helpers import load_config
-from src.data.ingestion import DataIngestion
-from src.features.build_features import build_preprocessing_pipeline
-
-def train_model(config_path="configs/config.yaml"):
-    config = load_config(config_path)
-    ingestion = DataIngestion(config_path)
-    df = ingestion.load_raw_data()
-
-    target = config["target_column"]
-    df = df.dropna(subset=[target])
-    
-    y = df[target].map({'Yes': 1, 'No': 0, 1: 1, 0: 0})
-    X = df.drop(columns=[target, config["id_column"]], errors='ignore')
-
-    num_cols = [c for c in config["numerical_columns"] if c in X.columns]
-    cat_cols = [c for c in config["categorical_columns"] if c in X.columns]
-
-    preprocessor = build_preprocessing_pipeline(num_cols, cat_cols)
-    model = LGBMClassifier(
-        random_state=config["random_state"],
-        n_estimators=100,
-        learning_rate=0.05
-    )
-
-    pipeline = Pipeline([
-        ('preprocessor', preprocessor),
-        ('classifier', model)
-    ])
-
-    pipeline.fit(X, y)
-
-    os.makedirs(os.path.dirname(config["model_path"]), exist_ok=True)
-    joblib.dump(pipeline, config["model_path"])
-    print(f"Model successfully saved to {config['model_path']}")
-
-if __name__ == "__main__":
-    train_model()'''
-
-
-
-
-import sys
-import joblib
+import numpy as np
 import pandas as pd
 
 from pathlib import Path
+
+from sklearn.model_selection import train_test_split
+from sklearn.metrics import (
+    accuracy_score,
+    precision_score,
+    recall_score,
+    f1_score,
+    roc_auc_score,
+)
+
 from xgboost import XGBClassifier
-from sklearn.pipeline import Pipeline
 
-from src.features.build_features import build_preprocessing_pipeline
+from src.features.build_features import (
+    build_preprocessing_pipeline
+)
+
+
+ROOT = Path(__file__).resolve().parents[2]
+
+DATA_PATH = (
+    ROOT
+    / "data"
+    / "raw"
+    / "cell2celltrain.csv"
+)
+
+MODEL_DIR = (
+    ROOT
+    / "models"
+)
+
+MODEL_PATH = (
+    MODEL_DIR
+    / "churn_pipeline.joblib"
+)
+
+PREPROCESSOR_PATH = (
+    ROOT
+    / "src"
+    / "models"
+    / "preprocessing_pipeline.pkl"
+)
+
+
+TARGET = "churn"
+ID_COL = "customerid"
 
 
 # ============================================================
-# PROJECT ROOT
+# LOAD DATA
 # ============================================================
 
-# train.py:
-# CCP/
-#   src/
-#     models/
-#       train.py
-#
-# parent        -> models
-# parent.parent -> src
-# parent.parent.parent -> CCP
+df = pd.read_csv(
+    DATA_PATH,
+    low_memory=False
+)
 
-PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
-
-if str(PROJECT_ROOT) not in sys.path:
-    sys.path.insert(0, str(PROJECT_ROOT))
+df.columns = (
+    df.columns
+    .astype(str)
+    .str.strip()
+    .str.lower()
+)
 
 
 # ============================================================
-# TRAIN MODEL
+# TARGET
 # ============================================================
 
-def train_model():
+if TARGET not in df.columns:
 
-    # --------------------------------------------------------
-    # Dataset
-    # --------------------------------------------------------
-
-    data_path = PROJECT_ROOT / "data" / "raw" / "cell2celltrain.csv"
-
-    print("=" * 60)
-    print("       CUSTOMER CHURN MODEL TRAINING")
-    print("=" * 60)
-
-    print(f"\nDataset path:")
-    print(data_path)
-
-    if not data_path.exists():
-
-        raise FileNotFoundError(
-            f"Dataset file not found:\n{data_path}"
-        )
-
-    df = pd.read_csv(data_path)
-
-    print(f"Dataset shape: {df.shape}")
-
-    # --------------------------------------------------------
-    # Standardize column names
-    # --------------------------------------------------------
-
-    df.columns = df.columns.str.lower()
-
-    # --------------------------------------------------------
-    # Target + ID
-    # --------------------------------------------------------
-
-    target = "churn"
-    id_col = "customerid"
-
-    if target not in df.columns:
-
-        raise ValueError(
-            f"Target column '{target}' not found."
-        )
-
-    # Remove rows with missing target
-
-    df = df.dropna(subset=[target])
-
-    # --------------------------------------------------------
-    # Convert target to binary
-    # --------------------------------------------------------
-
-    y = df[target].map({
-        "Yes": 1,
-        "No": 0,
-        "yes": 1,
-        "no": 0,
-        1: 1,
-        0: 0
-    })
-
-    # Check for unmapped values
-
-    if y.isna().any():
-
-        unknown_values = df.loc[
-            y.isna(),
-            target
-        ].unique()
-
-        raise ValueError(
-            f"Unknown target values found: {unknown_values}"
-        )
-
-    y = y.astype(int)
-
-    # --------------------------------------------------------
-    # Features
-    # --------------------------------------------------------
-
-    X = df.drop(
-        columns=[target, id_col],
-        errors="ignore"
+    raise ValueError(
+        f"Target column '{TARGET}' not found."
     )
 
-    print(f"Feature matrix shape: {X.shape}")
 
-    # --------------------------------------------------------
-    # Detect feature types
-    # --------------------------------------------------------
+def convert_target(value):
 
-    num_cols = X.select_dtypes(
-        include=["int64", "float64"]
-    ).columns.tolist()
+    text = str(value).strip().lower()
 
-    cat_cols = X.select_dtypes(
-        include=["object", "category"]
-    ).columns.tolist()
+    if text in {
+        "yes",
+        "y",
+        "1",
+        "true",
+        "churn",
+        "churned"
+    }:
 
-    print(f"\nNumerical features : {len(num_cols)}")
-    print(f"Categorical features: {len(cat_cols)}")
+        return 1
 
-    # --------------------------------------------------------
-    # Preprocessing
-    # --------------------------------------------------------
+    if text in {
+        "no",
+        "n",
+        "0",
+        "false",
+        "no churn",
+        "not churn"
+    }:
 
-    preprocessor = build_preprocessing_pipeline(
-        num_cols,
-        cat_cols
-    )
+        return 0
 
-    # --------------------------------------------------------
-    # XGBoost
-    # --------------------------------------------------------
+    return np.nan
 
-    print("\nInitializing XGBoost...")
 
-    model = XGBClassifier(
+y = (
+    df[TARGET]
+    .apply(convert_target)
+)
+
+valid = y.notna()
+
+df = df.loc[valid].copy()
+y = y.loc[valid].astype(int)
+
+
+# ============================================================
+# FEATURES
+# ============================================================
+
+drop_columns = [
+    TARGET,
+    ID_COL
+]
+
+X = df.drop(
+    columns=drop_columns,
+    errors="ignore"
+)
+
+
+# ============================================================
+# TRAIN / TEST SPLIT
+# ============================================================
+
+X_train, X_test, y_train, y_test = (
+    train_test_split(
+        X,
+        y,
+        test_size=0.20,
         random_state=42,
-        n_estimators=100,
-        learning_rate=0.1,
-        max_depth=6,
-        eval_metric="logloss"
+        stratify=y
     )
+)
 
-    # --------------------------------------------------------
-    # Complete Pipeline
-    # --------------------------------------------------------
 
-    pipeline = Pipeline(
-        steps=[
-            ("preprocessor", preprocessor),
-            ("classifier", model)
+# ============================================================
+# DETERMINE COLUMN TYPES
+# ============================================================
+
+num_cols = (
+    X_train
+    .select_dtypes(
+        include=np.number
+    )
+    .columns
+    .tolist()
+)
+
+cat_cols = (
+    X_train
+    .select_dtypes(
+        include=[
+            "object",
+            "category"
         ]
     )
+    .columns
+    .tolist()
+)
 
-    # --------------------------------------------------------
-    # Train
-    # --------------------------------------------------------
 
-    print("\n--- Training Model Pipeline ---")
+# ============================================================
+# PREPROCESS
+# ============================================================
 
-    pipeline.fit(X, y)
+preprocessor = build_preprocessing_pipeline(
+    num_cols,
+    cat_cols
+)
 
-    print("✓ Model training completed successfully.")
 
-    # --------------------------------------------------------
-    # Save model
-    # --------------------------------------------------------
-
-    model_dir = PROJECT_ROOT / "models"
-
-    model_dir.mkdir(
-        parents=True,
-        exist_ok=True
+X_train_transformed = (
+    preprocessor.fit_transform(
+        X_train
     )
+)
 
-    model_path = model_dir / "churn_pipeline.joblib"
-
-    joblib.dump(
-        pipeline,
-        model_path
+X_test_transformed = (
+    preprocessor.transform(
+        X_test
     )
+)
+
+
+# ============================================================
+# MODEL
+# ============================================================
+
+model = XGBClassifier(
+    n_estimators=50,
+    learning_rate=0.1,
+    max_depth=6,
+    random_state=42,
+    eval_metric="logloss",
+    tree_method="hist",
+    n_jobs=-1
+)
+
+
+# ============================================================
+# TRAIN
+# ============================================================
+
+model.fit(
+    X_train_transformed,
+    y_train
+)
+
+
+# ============================================================
+# EVALUATION
+# ============================================================
+
+y_pred = model.predict(
+    X_test_transformed
+)
+
+y_prob = model.predict_proba(
+    X_test_transformed
+)[:, 1]
+
+
+metrics = {
+    "accuracy": accuracy_score(
+        y_test,
+        y_pred
+    ),
+    "precision": precision_score(
+        y_test,
+        y_pred,
+        zero_division=0
+    ),
+    "recall": recall_score(
+        y_test,
+        y_pred,
+        zero_division=0
+    ),
+    "f1_score": f1_score(
+        y_test,
+        y_pred,
+        zero_division=0
+    ),
+    "roc_auc": roc_auc_score(
+        y_test,
+        y_prob
+    )
+}
+
+
+print("\nMODEL RESULTS")
+print("-" * 50)
+
+for name, value in metrics.items():
 
     print(
-        f"\n✓ Trained model pipeline saved at:"
-        f"\n  {model_path}"
+        f"{name:<12}: {value:.4f}"
     )
-
-    print("\nXGBoost version used for training:")
-
-    import xgboost
-
-    print(f"  {xgboost.__version__}")
-
-    print("\n" + "=" * 60)
-    print("       TRAINING COMPLETED")
-    print("=" * 60)
 
 
 # ============================================================
-# MAIN
+# SAVE ARTIFACTS
 # ============================================================
 
-if __name__ == "__main__":
-    train_model()
+MODEL_DIR.mkdir(
+    parents=True,
+    exist_ok=True
+)
+
+joblib.dump(
+    model,
+    MODEL_DIR / "churn_model.joblib"
+)
+
+joblib.dump(
+    preprocessor,
+    PREPROCESSOR_PATH
+)
 
 
+# ------------------------------------------------------------
+# Save combined pipeline
+# ------------------------------------------------------------
 
-    
-'''
-import os
-import joblib
-import pandas as pd
-from sklearn.ensemble import GradientBoostingClassifier
-from sklearn.pipeline import Pipeline
+artifact = {
+    "model": model,
+    "preprocessor": preprocessor,
+    "model_input_columns": list(
+        X_train.columns
+    ),
+    "numeric_columns": num_cols,
+    "categorical_columns": cat_cols,
+    "metrics": metrics,
+}
 
-from src.utils.helpers import load_config  # Assuming this loads the config file
-from src.data.ingestion import DataIngestion  # Assuming this handles data ingestion
-from src.features.build_features import build_preprocessing_pipeline  # Assuming this builds preprocessing pipeline
+joblib.dump(
+    artifact,
+    MODEL_PATH
+)
 
-def train_model(config_path="configs/config.yaml"):
-    # Load configuration
-    config = load_config(config_path)
-    ingestion = DataIngestion(config_path)
-    df = ingestion.load_raw_data()
 
-    # Prepare target and features
-    target = config["target_column"]
-    df = df.dropna(subset=[target])
-    
-    y = df[target].map({'Yes': 1, 'No': 0, 1: 1, 0: 0})
-    X = df.drop(columns=[target, config["id_column"]], errors='ignore')
-
-    # Identify numerical and categorical columns
-    num_cols = [c for c in config["numerical_columns"] if c in X.columns]
-    cat_cols = [c for c in config["categorical_columns"] if c in X.columns]
-
-    # Build preprocessing pipeline
-    preprocessor = build_preprocessing_pipeline(num_cols, cat_cols)
-
-    # Define the Gradient Boosting model
-    model = GradientBoostingClassifier(
-        random_state=config["random_state"],
-        n_estimators=100,
-        learning_rate=0.1,
-        max_depth=6
-    )
-
-    # Create a pipeline with preprocessing and model
-    pipeline = Pipeline(steps=[
-        ("preprocessor", preprocessor),
-        ("classifier", model)
-    ])
-
-    # Train the model
-    pipeline.fit(X, y)
-    print("Model training completed.")
-    # Save the trained pipeline
-    model_path = os.path.join(config["model_dir"], config["model_path"])
-    os.makedirs(os.path.dirname(model_path), exist_ok=True)  # Ensure directory exists
-    joblib.dump(pipeline, model_path)
-    print(f"Trained model saved at: {model_path}")
-
-if __name__ == "__main__":
-    train_model(config_path="configs/config.yaml")
-    '''
+print("\nTraining completed.")
+print(
+    f"Saved combined model:\n{MODEL_PATH}"
+)
+print(
+    f"Saved preprocessor:\n{PREPROCESSOR_PATH}"
+)
