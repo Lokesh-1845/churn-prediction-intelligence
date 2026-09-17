@@ -3,7 +3,7 @@
 # ============================================================
 
 from __future__ import annotations
-#use these libs
+#use these librays
 import hashlib
 import warnings
 import sys
